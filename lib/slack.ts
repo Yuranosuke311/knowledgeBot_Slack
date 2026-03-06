@@ -131,29 +131,24 @@ export async function postAnswer(
     })
     .join('\n')
 
+  const blocks = [
+    { type: 'section', text: { type: 'mrkdwn', text: answer } },
+    ...(sourceLines
+      ? [
+          { type: 'divider' },
+          {
+            type: 'context',
+            elements: [{ type: 'mrkdwn', text: `*参照したナレッジ*
+${sourceLines}` }],
+          },
+        ]
+      : []),
+  ]
+
   await getSlackClient().chat.postMessage({
     channel: channelId,
     thread_ts: threadTs,
-    blocks: [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: answer,
-        },
-      },
-      {
-        type: 'divider',
-      },
-      {
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: `*参照したナレッジ*\n${sourceLines}`,
-          },
-        ],
-      },
-    ],
+    text: answer,
+    blocks,
   })
 }
