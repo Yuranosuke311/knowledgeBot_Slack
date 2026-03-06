@@ -7,7 +7,7 @@ function getGenAI(): GoogleGenerativeAI {
 }
 
 export async function embedText(text: string): Promise<number[]> {
-  const model = getGenAI().getGenerativeModel({ model: 'text-embedding-004' })
+  const model = getGenAI().getGenerativeModel({ model: 'text-embedding-004' }, { apiVersion: 'v1' })
   const result = await model.embedContent(text)
   return result.embedding.values
 }
