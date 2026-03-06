@@ -7,9 +7,13 @@ import {
   getUserDisplayName,
   getChannelName,
   postSaveNotification,
+  postUsageHint,
+  postAnswer,
 } from '@/lib/slack'
 import { createKnowledgePage } from '@/lib/notion'
 import { buildRedisKey, isDuplicate, markAsProcessed } from '@/lib/redis'
+import { embedText, generateAnswer } from '@/lib/gemini'
+import { upsertVector, searchVector } from '@/lib/vector'
 import {
   CATEGORY_MAP,
   TARGET_REACTIONS,
@@ -40,42 +44,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const event = body.event as Record<string, unknown> | undefined
-
-  // reaction_added 以外は無視
-  if (!event || event.type !== 'reaction_added') {
+  if (!event) {
     return NextResponse.json({ ok: true, skipped: true })
   }
 
+  if (event.type === 'reaction_added') {
+    await handleReactionAdded(event)
+  } else if (event.type === 'app_mention') {
+    await handleAppMention(event)
+  }
+
+  return NextResponse.json({ ok: true })
+}
+
+async function handleReactionAdded(event: Record<string, unknown>): Promise<void> {
   const reaction = event.reaction as string
   const item = event.item as Record<string, string>
 
-  // 対象絵文字以外は無視
-  if (!TARGET_REACTIONS.has(reaction as ReactionEmoji)) {
-    return NextResponse.json({ ok: true, skipped: true })
-  }
+  if (!TARGET_REACTIONS.has(reaction as ReactionEmoji)) return
 
   const channelId = item.channel
   const messageTs = item.ts
   const reactingUserId = event.user as string
 
-  // 重複チェック
   const redisKey = buildRedisKey(channelId, messageTs, reaction)
-  if (await isDuplicate(redisKey)) {
-    return NextResponse.json({ ok: true, skipped: true })
-  }
+  if (await isDuplicate(redisKey)) return
 
-  // スレッド全文・投稿者名・チャンネル名を並列取得
   const [messages, channelName] = await Promise.all([
     fetchThreadMessages(channelId, messageTs),
     getChannelName(channelId),
   ])
 
-  // 投稿者（スレッド親メッセージの user）の表示名を取得
   const originalMessage = messages[0]
   const posterId = originalMessage?.user ?? reactingUserId
   const postedBy = await getUserDisplayName(posterId)
 
-  // スレッド全文を結合
   const fullText = messages
     .map((m) => m.text)
     .filter(Boolean)
@@ -83,26 +86,79 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const title = (originalMessage?.text ?? '').slice(0, 80) || '（本文なし）'
   const category = CATEGORY_MAP[reaction as ReactionEmoji]
+  const savedAt = new Date().toISOString()
 
-  // Notion へ保存 と Redis への書き込みを並列実行
   const [notionResult] = await Promise.all([
     createKnowledgePage({
       title,
       category,
       postedBy,
       slackChannel: channelName,
-      savedAt: new Date().toISOString(),
+      savedAt,
       fullText,
     }),
     markAsProcessed(redisKey),
   ])
 
-  // 保存完了通知をスレッドへ返信（失敗しても 200 を返す）
+  // 保存完了通知（失敗しても続行）
   try {
     await postSaveNotification(channelId, messageTs, category, notionResult.url)
   } catch (err) {
     console.error('[Slack] postSaveNotification error:', err)
   }
 
-  return NextResponse.json({ ok: true })
+  // Upstash Vector への登録（失敗してもフェーズ1 の動作に影響しない）
+  try {
+    const vector = await embedText(fullText)
+    await upsertVector(notionResult.id, vector, {
+      title,
+      category,
+      channel: channelName,
+      savedAt,
+      notionUrl: notionResult.url,
+      fullText: fullText.slice(0, 1000),
+    })
+  } catch (err) {
+    console.error('[Vector] upsert error:', err)
+  }
+}
+
+async function handleAppMention(event: Record<string, unknown>): Promise<void> {
+  // ボット自身の投稿によるメンションは無視（無限ループ防止）
+  if (event.bot_id) return
+
+  const channelId = event.channel as string
+  const threadTs = (event.thread_ts ?? event.ts) as string
+
+  // メンション部分を除いた質問テキストを抽出
+  const question = ((event.text as string) ?? '').replace(/<@[A-Z0-9]+>/g, '').trim()
+
+  if (!question) {
+    try {
+      await postUsageHint(channelId, threadTs)
+    } catch (err) {
+      console.error('[Slack] postUsageHint error:', err)
+    }
+    return
+  }
+
+  try {
+    const vector = await embedText(question)
+    const results = await searchVector(vector, 5)
+
+    if (results.length === 0) {
+      await postAnswer(channelId, threadTs, '関連する情報が見つかりませんでした。', [])
+      return
+    }
+
+    const answer = await generateAnswer(question, results)
+    await postAnswer(channelId, threadTs, answer, results)
+  } catch (err) {
+    console.error('[RAG] error:', err)
+    try {
+      await postAnswer(channelId, threadTs, '検索に失敗しました。しばらく待ってから再試行してください。', [])
+    } catch {
+      // 返信失敗は無視
+    }
+  }
 }

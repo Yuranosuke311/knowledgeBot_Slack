@@ -103,3 +103,57 @@ export async function postSaveNotification(
     ],
   })
 }
+
+// 使い方ヒントをスレッドへ返信
+export async function postUsageHint(
+  channelId: string,
+  threadTs: string
+): Promise<void> {
+  await getSlackClient().chat.postMessage({
+    channel: channelId,
+    thread_ts: threadTs,
+    text: '使い方: `@knowledgeBot <質問内容>` と話しかけてください',
+  })
+}
+
+// RAG 回答をスレッドへ返信（出典リンク付き）
+export async function postAnswer(
+  channelId: string,
+  threadTs: string,
+  answer: string,
+  sources: import('@/types/knowledge').VectorSearchResult[]
+): Promise<void> {
+  const sourceLines = sources
+    .map((r) => {
+      const m = r.metadata
+      const savedDate = m.savedAt.slice(0, 10)
+      return `・${m.title} (${m.channel} / ${savedDate})　<${m.notionUrl}|開く>`
+    })
+    .join('\n')
+
+  await getSlackClient().chat.postMessage({
+    channel: channelId,
+    thread_ts: threadTs,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: answer,
+        },
+      },
+      {
+        type: 'divider',
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `*参照したナレッジ*\n${sourceLines}`,
+          },
+        ],
+      },
+    ],
+  })
+}

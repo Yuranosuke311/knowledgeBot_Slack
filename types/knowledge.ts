@@ -34,3 +34,17 @@ export interface KnowledgeData {
   savedAt: string
   fullText: string
 }
+
+export interface VectorMetadata {
+  title: string
+  category: CategoryLabel
+  channel: string
+  savedAt: string
+  notionUrl: string
+  fullText: string
+}
+
+export interface VectorSearchResult {
+  score: number
+  metadata: VectorMetadata
+}

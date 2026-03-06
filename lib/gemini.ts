@@ -1,0 +1,45 @@
+import { GoogleGenerativeAI } from '@google/generative-ai'
+import type { VectorSearchResult } from '@/types/knowledge'
+import { CATEGORY_EMOJI } from '@/types/knowledge'
+
+function getGenAI(): GoogleGenerativeAI {
+  return new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
+}
+
+export async function embedText(text: string): Promise<number[]> {
+  const model = getGenAI().getGenerativeModel({ model: 'text-embedding-004' })
+  const result = await model.embedContent(text)
+  return result.embedding.values
+}
+
+const SYSTEM_PROMPT = `あなたは社内ナレッジ検索アシスタントです。
+以下のナレッジ一覧はSlackで重要とマークされ保存された社内情報です。
+ユーザーの質問に対して、ナレッジの内容を参照して日本語で簡潔に回答してください。
+
+【ルール】
+- ナレッジに記載のない情報は回答に含めないこと
+- 回答は3〜5文程度にまとめること
+- 推測・憶測は行わないこと`
+
+export async function generateAnswer(
+  question: string,
+  context: VectorSearchResult[]
+): Promise<string> {
+  const model = getGenAI().getGenerativeModel({
+    model: 'gemini-1.5-flash',
+    systemInstruction: SYSTEM_PROMPT,
+  })
+
+  const knowledgeList = context
+    .map((r) => {
+      const m = r.metadata
+      const savedDate = m.savedAt.slice(0, 10)
+      return `---\nタイトル: ${m.title}\nカテゴリ: ${CATEGORY_EMOJI[m.category]} ${m.category}\nチャンネル: ${m.channel}\n保存日: ${savedDate}\n内容:\n${m.fullText}`
+    })
+    .join('\n')
+
+  const prompt = `【ナレッジ一覧】\n${knowledgeList}\n\n【質問】\n${question}`
+
+  const result = await model.generateContent(prompt)
+  return result.response.text()
+}
