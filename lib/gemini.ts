@@ -7,7 +7,7 @@ function getGenAI(): GoogleGenerativeAI {
 }
 
 export async function embedText(text: string): Promise<number[]> {
-  const model = getGenAI().getGenerativeModel({ model: 'embedding-001' })
+  const model = getGenAI().getGenerativeModel({ model: 'gemini-embedding-001' })
   const result = await model.embedContent(text)
   return result.embedding.values
 }
@@ -26,7 +26,7 @@ export async function generateAnswer(
   context: VectorSearchResult[]
 ): Promise<string> {
   const model = getGenAI().getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.5-flash',
     systemInstruction: SYSTEM_PROMPT,
   })
 
