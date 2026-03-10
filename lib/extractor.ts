@@ -6,8 +6,6 @@
  */
 
 import * as cheerio from 'cheerio'
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
 // Slack メッセージ内のファイル情報
@@ -68,12 +66,18 @@ export async function fetchUrlText(url: string): Promise<string> {
 // ─────────────────────────────────────────────
 
 /**
- * PDF バッファからテキストを抽出（最大 5000 文字）
+ * PDF バッファを Gemini に送信してテキスト化（最大 5000 文字）
+ * pdf-parse の代わりに Gemini Vision を使用（Vercel 対応・ネイティブ依存なし）
  */
 export async function extractPdfText(buffer: Buffer): Promise<string> {
   try {
-    const data = await pdfParse(buffer)
-    return data.text.replace(/\s+/g, ' ').trim().slice(0, 5000)
+    const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
+    const model = genai.getGenerativeModel({ model: 'gemini-2.5-flash' })
+    const result = await model.generateContent([
+      { inlineData: { data: buffer.toString('base64'), mimeType: 'application/pdf' } },
+      'このPDFの内容を日本語でテキストとして抽出・要約してください。',
+    ])
+    return result.response.text().slice(0, 5000)
   } catch {
     return ''
   }
@@ -109,7 +113,7 @@ export async function extractImageText(
 
 /**
  * Slack の private URL からファイルをダウンロードして、種別に応じてテキスト化する
- * - application/pdf → pdf-parse
+ * - application/pdf → Gemini Vision（PDF ネイティブ対応）
  * - image/*         → Gemini Vision
  * - その他          → 空文字
  */

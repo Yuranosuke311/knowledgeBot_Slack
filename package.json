@@ -15,13 +15,11 @@
     "@upstash/vector": "^1.2.2",
     "cheerio": "^1.2.0",
     "next": "14.2.35",
-    "pdf-parse": "^2.4.5",
     "react": "^18",
     "react-dom": "^18"
   },
   "devDependencies": {
     "@types/node": "^20",
-    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "dotenv": "^17.3.1",
