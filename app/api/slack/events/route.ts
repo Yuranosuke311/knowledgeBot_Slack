@@ -4,12 +4,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import {
   verifySlackSignature,
   fetchThreadMessages,
+  fetchMessageFiles,
   getUserDisplayName,
   getChannelName,
   postSaveNotification,
   postUsageHint,
   postAnswer,
 } from '@/lib/slack'
+import { buildEnrichment } from '@/lib/extractor'
 import { createKnowledgePage } from '@/lib/notion'
 import { buildRedisKey, isDuplicate, markAsProcessed } from '@/lib/redis'
 import { embedText, generateAnswer } from '@/lib/gemini'
@@ -21,6 +23,11 @@ import {
 } from '@/types/knowledge'
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // Slack リトライリクエストは無視（処理遅延による2回返信を防止）
+  if (req.headers.get('x-slack-retry-num')) {
+    return NextResponse.json({ ok: true, skipped: 'retry' })
+  }
+
   const rawBody = await req.text()
 
   // URL Verification（Slack App 初回設定時）
@@ -70,21 +77,31 @@ async function handleReactionAdded(event: Record<string, unknown>): Promise<void
   const redisKey = buildRedisKey(channelId, messageTs, reaction)
   if (await isDuplicate(redisKey)) return
 
-  const [messages, channelName] = await Promise.all([
+  const [messages, channelName, files] = await Promise.all([
     fetchThreadMessages(channelId, messageTs),
     getChannelName(channelId),
+    fetchMessageFiles(channelId, messageTs),
   ])
 
   const originalMessage = messages[0]
   const posterId = originalMessage?.user ?? reactingUserId
   const postedBy = await getUserDisplayName(posterId)
 
-  const fullText = messages
+  const rawText = originalMessage?.text ?? ''
+  let fullText = messages
     .map((m) => m.text)
     .filter(Boolean)
     .join('\n\n---\n\n')
 
-  const title = (originalMessage?.text ?? '').slice(0, 80) || '（本文なし）'
+  // URL・PDF・画像から追加テキストを抽出して付加（失敗しても続行）
+  try {
+    const enrichment = await buildEnrichment(rawText, files, process.env.SLACK_BOT_TOKEN!)
+    if (enrichment) fullText += enrichment
+  } catch (err) {
+    console.error('[Extractor] enrichment error:', err)
+  }
+
+  const title = rawText.slice(0, 80) || '（本文なし）'
   const category = CATEGORY_MAP[reaction as ReactionEmoji]
   const savedAt = new Date().toISOString()
 

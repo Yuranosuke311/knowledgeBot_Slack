@@ -2,6 +2,7 @@ import { WebClient } from '@slack/web-api'
 import { createHmac, timingSafeEqual } from 'crypto'
 import type { CategoryLabel, SlackMessage } from '@/types/knowledge'
 import { CATEGORY_EMOJI } from '@/types/knowledge'
+import type { SlackFile } from '@/lib/extractor'
 
 let _slackClient: WebClient | null = null
 function getSlackClient(): WebClient {
@@ -68,6 +69,34 @@ export async function getChannelName(channelId: string): Promise<string> {
     return '#' + (ch?.name ?? channelId)
   } catch {
     return channelId
+  }
+}
+
+// 元メッセージの Slack 添付ファイル一覧を取得
+export async function fetchMessageFiles(
+  channelId: string,
+  messageTs: string
+): Promise<SlackFile[]> {
+  try {
+    const result = await getSlackClient().conversations.history({
+      channel: channelId,
+      oldest: messageTs,
+      latest: messageTs,
+      limit: 1,
+      inclusive: true,
+    })
+    const msg = result.messages?.[0] as Record<string, unknown> | undefined
+    if (!msg?.files) return []
+    const files = msg.files as Array<Record<string, string>>
+    return files
+      .filter((f) => f.url_private_download && f.mimetype)
+      .map((f) => ({
+        urlPrivateDownload: f.url_private_download,
+        mimetype: f.mimetype,
+        name: f.name ?? 'file',
+      }))
+  } catch {
+    return []
   }
 }
 
