@@ -46,8 +46,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       token: process.env.QSTASH_TOKEN!,
       ...(process.env.QSTASH_URL ? { baseUrl: process.env.QSTASH_URL } : {}),
     })
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
+    const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
       : process.env.NEXT_PUBLIC_BASE_URL!
 
     try {
