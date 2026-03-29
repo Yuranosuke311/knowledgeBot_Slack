@@ -1,27 +1,18 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
+import { WebClient } from '@slack/web-api'
 import {
   verifySlackSignature,
-  fetchThreadMessages,
-  fetchMessageFiles,
-  getUserDisplayName,
-  getChannelName,
-  postSaveNotification,
   postUsageHint,
   postAnswer,
   postCollectConfirmation,
 } from '@/lib/slack'
-import { buildEnrichment } from '@/lib/extractor'
-import { createKnowledgePage } from '@/lib/notion'
-import { buildRedisKey, isDuplicate, markAsProcessed } from '@/lib/redis'
+import { buildRedisKey, isDuplicate, markAsProcessed, isAutoCollect, setAutoCollect, getNotionPageId, setNotionPageId } from '@/lib/redis'
 import { embedText, generateAnswer } from '@/lib/gemini'
-import { upsertVector, searchVector } from '@/lib/vector'
-import {
-  CATEGORY_MAP,
-  TARGET_REACTIONS,
-  type ReactionEmoji,
-} from '@/types/knowledge'
+import { searchVector } from '@/lib/vector'
+import { processSingleMessage } from '@/lib/collect'
+import { appendToKnowledgePage } from '@/lib/notion'
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   // Slack リトライリクエストは無視（処理遅延による2回返信を防止）
@@ -56,8 +47,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true, skipped: true })
   }
 
-  if (event.type === 'reaction_added') {
-    await handleReactionAdded(event)
+  if (event.type === 'message') {
+    await handleMessage(event)
   } else if (event.type === 'app_mention') {
     await handleAppMention(event)
   } else if (event.type === 'member_joined_channel') {
@@ -67,78 +58,57 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   return NextResponse.json({ ok: true })
 }
 
-async function handleReactionAdded(event: Record<string, unknown>): Promise<void> {
-  const reaction = event.reaction as string
-  const item = event.item as Record<string, string>
+async function handleMessage(event: Record<string, unknown>): Promise<void> {
+  if (event.bot_id) return
+  if (event.subtype) return
 
-  if (!TARGET_REACTIONS.has(reaction as ReactionEmoji)) return
+  const channelId = event.channel as string
+  if (!await isAutoCollect(channelId)) return
 
-  const channelId = item.channel
-  const messageTs = item.ts
-  const reactingUserId = event.user as string
+  const ts = event.ts as string
+  const threadTs = event.thread_ts as string | undefined
+  const rawText = ((event.text as string) ?? '').trim()
+  if (rawText.length < 5) return
 
-  const redisKey = buildRedisKey(channelId, messageTs, reaction)
-  if (await isDuplicate(redisKey)) return
+  const isReply = threadTs !== undefined && threadTs !== ts
 
-  const [messages, channelName, files] = await Promise.all([
-    fetchThreadMessages(channelId, messageTs),
-    getChannelName(channelId),
-    fetchMessageFiles(channelId, messageTs),
-  ])
+  if (isReply) {
+    // スレッド返信 → 親メッセージの Notion ページに追記
+    const redisKey = buildRedisKey(channelId, ts, '_bulk')
+    if (await isDuplicate(redisKey)) return
 
-  const originalMessage = messages[0]
-  const posterId = originalMessage?.user ?? reactingUserId
-  const postedBy = await getUserDisplayName(posterId)
+    const pageId = await getNotionPageId(channelId, threadTs)
+    if (pageId) {
+      try {
+        await appendToKnowledgePage(pageId, `\n---\n${rawText}`)
+        await markAsProcessed(redisKey)
+      } catch (err) {
+        console.error('[AutoCollect] appendToKnowledgePage error:', err)
+      }
+    }
+    // 親ページが見つからない場合は個別保存しない（バルク収集時にスレッドごと取得済みのため）
+  } else {
+    // 親メッセージ → 新規 Notion ページ作成
+    const redisKey = buildRedisKey(channelId, ts, '_bulk')
+    if (await isDuplicate(redisKey)) return
 
-  const rawText = originalMessage?.text ?? ''
-  let fullText = messages
-    .map((m) => m.text)
-    .filter(Boolean)
-    .join('\n\n---\n\n')
+    const slack = new WebClient(process.env.SLACK_BOT_TOKEN)
+    let channelName = channelId
+    try {
+      const info = await slack.conversations.info({ channel: channelId })
+      const ch = info.channel as Record<string, unknown> | undefined
+      channelName = '#' + ((ch?.name as string) ?? channelId)
+    } catch { /* 取得失敗時はIDをそのまま */ }
 
-  // URL・PDF・画像から追加テキストを抽出して付加（失敗しても続行）
-  try {
-    const enrichment = await buildEnrichment(rawText, files, process.env.SLACK_BOT_TOKEN!)
-    if (enrichment) fullText += enrichment
-  } catch (err) {
-    console.error('[Extractor] enrichment error:', err)
-  }
-
-  const title = rawText.slice(0, 80) || '（本文なし）'
-  const category = CATEGORY_MAP[reaction as ReactionEmoji]
-  const savedAt = new Date().toISOString()
-
-  // Notion保存が成功してからRedisに登録（失敗時に重複扱いにならないよう順番を明示）
-  const notionResult = await createKnowledgePage({
-    title,
-    category,
-    postedBy,
-    slackChannel: channelName,
-    savedAt,
-    fullText,
-  })
-  await markAsProcessed(redisKey)
-
-  // 保存完了通知（失敗しても続行）
-  try {
-    await postSaveNotification(channelId, messageTs, category, notionResult.url)
-  } catch (err) {
-    console.error('[Slack] postSaveNotification error:', err)
-  }
-
-  // Upstash Vector への登録（失敗してもフェーズ1 の動作に影響しない）
-  try {
-    const vector = await embedText(fullText)
-    await upsertVector(notionResult.id, vector, {
-      title,
-      category,
-      channel: channelName,
-      savedAt,
-      notionUrl: notionResult.url,
-      fullText: fullText.slice(0, 1000),
-    })
-  } catch (err) {
-    console.error('[Vector] upsert error:', err)
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pageId = await processSingleMessage(channelId, channelName, event as Record<string, any>)
+      if (pageId) {
+        await setNotionPageId(channelId, ts, pageId)
+      }
+    } catch (err) {
+      console.error('[AutoCollect] processSingleMessage error:', err)
+    }
   }
 }
 
@@ -146,6 +116,9 @@ async function handleMemberJoined(event: Record<string, unknown>): Promise<void>
   // ボット自身の参加のみ対象
   if (event.user !== process.env.SLACK_BOT_USER_ID) return
   const channelId = event.channel as string
+  // 自動収集モードをON
+  await setAutoCollect(channelId)
+  // 過去メッセージ収集確認（フェーズ4）
   try {
     await postCollectConfirmation(channelId)
   } catch (err) {

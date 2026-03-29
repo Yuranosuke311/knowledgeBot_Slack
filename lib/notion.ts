@@ -43,3 +43,20 @@ export async function createKnowledgePage(
     url: (response as { url: string }).url,
   }
 }
+
+export async function appendToKnowledgePage(pageId: string, text: string): Promise<void> {
+  const notion = new Client({ auth: process.env.NOTION_TOKEN })
+  const chunks: string[] = []
+  for (let i = 0; i < text.length; i += 1900) {
+    chunks.push(text.slice(i, i + 1900))
+  }
+  if (chunks.length === 0) return
+  await notion.blocks.children.append({
+    block_id: pageId,
+    children: chunks.map((chunk) => ({
+      object: 'block' as const,
+      type: 'paragraph' as const,
+      paragraph: { rich_text: [{ text: { content: chunk } }] },
+    })),
+  })
+}

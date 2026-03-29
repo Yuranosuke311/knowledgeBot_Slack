@@ -28,25 +28,25 @@ function cleanText(text: string): string {
 
 /**
  * Slack メッセージ1件を Notion + Upstash Vector に保存する。
- * @returns 保存した件数（0 or 1）
+ * @returns 保存した Notion ページID、スキップ時は null
  */
 export async function processSingleMessage(
   channelId: string,
   channelName: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   msg: Record<string, any>
-): Promise<number> {
+): Promise<string | null> {
   const ts      = msg.ts as string
   const rawText = (msg.text as string) ?? ''
   const userId  = (msg.user as string) ?? ''
 
   // bot メッセージ・短すぎるメッセージはスキップ
-  if (msg.bot_id) return 0
-  if (rawText.trim().length < 5) return 0
+  if (msg.bot_id) return null
+  if (rawText.trim().length < 5) return null
 
   // Redis 重複チェック（_bulk サフィックスでリアクション用キーと区別）
   const redisKey = buildRedisKey(channelId, ts, '_bulk')
-  if (await isDuplicate(redisKey)) return 0
+  if (await isDuplicate(redisKey)) return null
 
   const slack = getSlack()
 
@@ -113,5 +113,5 @@ export async function processSingleMessage(
     console.error('[Vector] upsert error:', err)
   }
 
-  return 1
+  return notionResult.id
 }

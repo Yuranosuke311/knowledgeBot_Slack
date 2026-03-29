@@ -266,13 +266,16 @@ https://xxxx.ngrok-free.app/api/slack/events
 app/
   api/
     slack/events/route.ts   # Slack Events API 受信（メイン処理）
+    slack/actions/route.ts  # [フェーズ4] Block Kit ボタン応答
+    slack/collect/route.ts  # [フェーズ4] QStash 経由の一括収集処理
 lib/
   slack.ts                  # 署名検証・スレッド取得・返信送信・添付ファイル取得
   notion.ts                 # Notion ページ作成（1,900文字チャンク分割）
-  redis.ts                  # 重複防止（Upstash Redis）
+  redis.ts                  # 重複防止・収集フラグ管理（Upstash Redis）
   gemini.ts                 # Embedding 生成・RAG 回答生成（Gemini API）
   vector.ts                 # ベクター登録・類似検索（Upstash Vector）
   extractor.ts              # [フェーズ3] URL・PDF・画像テキスト抽出
+  collect.ts                # [フェーズ4] 一括収集時の単一メッセージ処理
 types/
   knowledge.ts              # 型定義・カテゴリマッピング
 scripts/
@@ -281,8 +284,27 @@ scripts/
   dedup-notion.ts           # Notion 重複ページ削除
   fix-posted-by.ts          # PostedBy=Unknown の修正
   clear-redis-keys.ts       # Redis キー確認・削除
-docs/
-  要件定義書_フェーズ3.md   # フェーズ3 要件定義
-  設計書_フェーズ3.md       # フェーズ3 設計詳細
 .env.local.example          # 環境変数テンプレート
 ```
+
+---
+
+## 今後の拡張予定
+
+### フェーズ5：自動収集モード（開発中）
+
+ボットが参加しているチャンネルで、リアクション不要で全メッセージを自動保存する。
+
+- チャンネル参加時に自動収集モードをON（確認不要）
+- 既存チャンネルへの一括適用スクリプト（`scripts/enable-autocollect.ts`）
+- 自動収集済みメッセージへのリアクション保存は重複防止のためスキップ
+
+### フェーズ6：タスク管理機能（構想中）
+
+フェーズ5の自動収集基盤を活かし、メッセージからタスクを自動検出・管理する。
+
+| 機能 | 内容 |
+|------|------|
+| タスク登録 | 「〇〇までに〇〇をする」を検出 → Notion Tasks DB に登録 |
+| タスク完了 | 「〇〇完了した」を検出 → 対応タスクを自動で完了状態に更新 |
+| 期日管理 | 自然言語の日付（「来週月曜」「3/31」など）を解釈してNotionに保存 |

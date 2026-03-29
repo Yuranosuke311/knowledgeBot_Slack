@@ -53,7 +53,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   for (const msg of result.messages ?? []) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      newCollected += await processSingleMessage(channelId, channelName, msg as Record<string, any>)
+      const pageId = await processSingleMessage(channelId, channelName, msg as Record<string, any>)
+      if (pageId) newCollected++
     } catch (err) {
       console.error('[Collect] processSingleMessage error:', err)
     }

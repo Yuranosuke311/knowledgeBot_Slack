@@ -35,6 +35,50 @@ export async function markAsProcessed(key: string): Promise<void> {
   }
 }
 
+// ─── フェーズ5: Notion ページID キャッシュ（スレッド返信追記用）───
+
+function notionTsKey(channelId: string, ts: string): string {
+  return `notion_ts:${channelId}:${ts}`
+}
+
+export async function getNotionPageId(channelId: string, ts: string): Promise<string | null> {
+  try {
+    return await getRedis().get<string>(notionTsKey(channelId, ts))
+  } catch {
+    return null
+  }
+}
+
+export async function setNotionPageId(channelId: string, ts: string, pageId: string): Promise<void> {
+  try {
+    await getRedis().set(notionTsKey(channelId, ts), pageId, { ex: TTL_SECONDS })
+  } catch (err) {
+    console.error('[Redis] setNotionPageId error:', err)
+  }
+}
+
+// ─── フェーズ5: 自動収集モード ───
+
+function autoCollectKey(channelId: string): string {
+  return `autocollect:${channelId}`
+}
+
+export async function isAutoCollect(channelId: string): Promise<boolean> {
+  try {
+    return (await getRedis().exists(autoCollectKey(channelId))) === 1
+  } catch {
+    return false
+  }
+}
+
+export async function setAutoCollect(channelId: string): Promise<void> {
+  try {
+    await getRedis().set(autoCollectKey(channelId), '1')
+  } catch (err) {
+    console.error('[Redis] setAutoCollect error:', err)
+  }
+}
+
 // ─── フェーズ4: チャンネル収集中フラグ ───
 
 function collectingKey(channelId: string): string {
