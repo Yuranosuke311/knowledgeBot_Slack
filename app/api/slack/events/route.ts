@@ -70,6 +70,9 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   const rawText = ((event.text as string) ?? '').trim()
   if (rawText.length < 5) return
 
+  // @knowledgeBot へのメンションメッセージはスキップ（app_mention で処理）
+  if (process.env.SLACK_BOT_USER_ID && rawText.includes(`<@${process.env.SLACK_BOT_USER_ID}>`)) return
+
   const isReply = threadTs !== undefined && threadTs !== ts
 
   if (isReply) {
