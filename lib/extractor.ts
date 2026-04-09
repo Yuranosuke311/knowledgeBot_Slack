@@ -33,7 +33,7 @@ export function extractRawUrls(slackRawText: string): string[] {
   // 取得不可・不要な URL は除外
   const SKIP_DOMAINS = [
     'app.slack.com', 'files.slack.com',   // Slack内部
-    'twitter.com', 'x.com', 't.co',       // X(Twitter): 認証必須
+    'twitter.com', 'x.com', 't.co',       // X(Twitter): fetchXTweetContent() で別途処理
   ]
   return urls.filter((u) => !SKIP_DOMAINS.some((d) => u.includes(d)))
 }
@@ -143,6 +143,84 @@ export async function extractSlackFileContent(
 }
 
 // ─────────────────────────────────────────────
+// X（Twitter）コンテンツ取得
+// ─────────────────────────────────────────────
+
+/**
+ * Slack の生テキストから X/Twitter の URL を抽出する
+ */
+export function extractXUrls(slackRawText: string): string[] {
+  const regex = /<(https?:\/\/(?:x\.com|twitter\.com|t\.co)\/[^|>]+)(?:\|[^>]*)?>/g
+  const urls: string[] = []
+  let match
+  while ((match = regex.exec(slackRawText)) !== null) {
+    urls.push(match[1])
+  }
+  return urls
+}
+
+/**
+ * 外部取得テキストのプロンプトインジェクション対策
+ * 悪意ある指示パターンを [removed] に置換し、過剰に長いテキストを切り詰める
+ */
+export function sanitizeForPrompt(text: string): string {
+  const INJECTION_PATTERNS = [
+    /ignore\s+(all\s+)?previous\s+instructions?/gi,
+    /forget\s+(all\s+)?previous\s+instructions?/gi,
+    /^system\s*:/gim,
+    /^assistant\s*:/gim,
+    /^user\s*:/gim,
+    /あなたは今から/g,
+    /以下の指示に従/g,
+    /新しいロールを/g,
+  ]
+  let sanitized = text
+  for (const pattern of INJECTION_PATTERNS) {
+    sanitized = sanitized.replace(pattern, '[removed]')
+  }
+  if (sanitized.length > 10000) {
+    sanitized = sanitized.slice(0, 3000)
+  }
+  return sanitized
+}
+
+/**
+ * X_FETCH_ENDPOINT に X の投稿 URL を POST してツイート内容を返す
+ * 取得失敗・非公開・削除済みの場合は空文字を返す
+ */
+export async function fetchXTweetContent(xUrl: string): Promise<string> {
+  const endpoint = process.env.X_FETCH_ENDPOINT
+  if (!endpoint) return ''
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: xUrl }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return ''
+
+    const json = await res.json()
+    if (!json.success || !json.tweet) return ''
+
+    const { text, author_screen_name, likes, retweets, created_at, url } = json.tweet
+    const raw = [
+      `[X投稿: @${author_screen_name}]`,
+      text,
+      '',
+      `👍 いいね: ${likes}  🔁 RT: ${retweets}`,
+      `投稿日時: ${created_at}`,
+      `URL: ${url}`,
+    ].join('\n')
+
+    return sanitizeForPrompt(raw)
+  } catch {
+    return ''
+  }
+}
+
+// ─────────────────────────────────────────────
 // メイン: fullText を URL・添付ファイルで拡張する
 // ─────────────────────────────────────────────
 
@@ -181,6 +259,13 @@ export async function buildEnrichment(
     if (!file.mimetype.startsWith('image/')) continue
     const text = await extractSlackFileContent(file.urlPrivateDownload, file.mimetype, token)
     if (text) parts.push(`\n[添付画像: ${file.name}]\n${text}`)
+  }
+
+  // 4. X（Twitter）コンテンツ（最大 2件）
+  const xUrls = extractXUrls(rawSlackText)
+  for (const url of xUrls.slice(0, 2)) {
+    const text = await fetchXTweetContent(url)
+    if (text) parts.push(`\n${text}`)
   }
 
   return parts.join('\n')
